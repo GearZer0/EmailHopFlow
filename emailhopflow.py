@@ -53,6 +53,10 @@ parser.add_argument('--aggr',
             action='store_true',
             default=False,
             help="Add this flag if you would like to aggregate email by root domains")
+parser.add_argument('--senderdomain',
+            action='store',
+            default="",
+            help="Add this flag if you would like to aggregate for one domain only")
 parser.add_argument('--iploc',
             action='store_true',
             default=False,
@@ -78,7 +82,12 @@ general_args = args.general.split(",")
 # The width of the console, will be used for relative column printing in console mode
 console_width = os.get_terminal_size().columns
 
-
+# set aggregate filter domain
+if(args.senderdomain):
+    sender_domain = args.senderdomain
+else:
+    # will be used as False bool value to indicate, that script should aggregate for all domains
+    sender_domain = ""
 # If ip location mode selected
 if(args.iploc):
     # Check if api token defined and initialize the handler, else raise an error
@@ -98,12 +107,36 @@ if(not os.path.exists(emails_path)):
 output_rows = []
 aggr_dict = {}
 
+def insert_auth_result_placeholder(filename):
+    fh = open(filename)
+    fhread = fh.readlines()
+    findz = "Authentication-Results:"
+    
+    is_present = False
+    for line in fhread:
+        if line.startswith(findz):
+            is_present = True
+            break
+    #print saved
+    #spose = line.find('', atpos)
+
+    if (not is_present):
+        previous_text = ""
+        for i in fhread:
+            previous_text += i
+        open(filename, "w").write("Authentication-Results: INTERNAL_PLACEHOLDER\n" + previous_text)
+    fh.close()    
+
+
 # Loop through all the email files in the path
 for filename in os.listdir(emails_path):
     # Set full file name
     file_name = os.path.join(emails_path, filename)
 
     try:
+        # inserting extra fields for internal emails if required
+        insert_auth_result_placeholder(file_name)
+
         # Open the email file
         with open(file_name,encoding="utf-8") as fil:
             file_lines = fil.readlines()
@@ -330,49 +363,80 @@ elif(not args.aggr): # If in console mode
 else:
     # Foreach email aggregation
     for key,value in aggr_dict.items():
-
-        # Print aggregation info
-        print(general_info_colored("Sender Domain", key))
-
-        value["all_emails"] = sorted(value["all_emails"])
-
-        print(general_info_colored("Emails", ";".join(value["all_emails"])))
-        
-        # Sort data by hop serial number
-        value["data"] = sorted(value["data"], key=lambda d: d['serial']) 
-
-        output_rows = []
-        max_values_dict = {}
-        bad = []
-
-        # Calculate percentage and document in max values dictionary foreach hop number
-        for values in value["data"]:
-            values["perct"] = (len(values["mails"])/len(value["all_emails"]))*100
-            if(values["serial"] not in max_values_dict.keys()):
-                max_values_dict[values["serial"]] = values["perct"]
+        if sender_domain:
+            if key == sender_domain:
+                # Print aggregation info
+                print(general_info_colored("Sender Domain", key))
+                value["all_emails"] = sorted(value["all_emails"])
+                print(general_info_colored("Emails", ";".join(value["all_emails"])))
+                # Sort data by hop serial number
+                value["data"] = sorted(value["data"], key=lambda d: d['serial']) 
+                output_rows = []
+                max_values_dict = {}
+                bad = []
+                # Calculate percentage and document in max values dictionary foreach hop number
+                for values in value["data"]:
+                    values["perct"] = (len(values["mails"])/len(value["all_emails"]))*100
+                    if(values["serial"] not in max_values_dict.keys()):
+                        max_values_dict[values["serial"]] = values["perct"]
+                    else:
+                        max_values_dict[values["serial"]] = max(max_values_dict[values["serial"]],values["perct"])
+                # Color hops accordingly to the max percentage
+                for values in value["data"]:
+                    if(values["perct"] == 100):
+                        perct = colored(str(values["perct"])+"%","green")
+                    elif(values["perct"] == max_values_dict[values["serial"]]):
+                        perct = colored(str(values["perct"])+"% (Majority)","yellow")
+                    else:
+                        perct = colored(str(values["perct"])+"%","red")
+                        bad.extend(values["mails"])
+                    # Join the email files names
+                    values["mails"] = "\n".join(values["mails"])
+                    values["perct"] = perct
+                    output_rows.append(list(values.values()))
+                # Print the filename that appears the most in the bad values list
+                if (len(bad) != 0):
+                    print(general_info_colored("Most Anomalous Email: ",max(set(bad), key = bad.count)))
+                else:
+                    print("no file that appears the most in the bad values list")
+                # Print statistics table
+                print(tabulate(list(output_rows),headers=["serial","from domain","by domain","emails","perct"],tablefmt="fancy_grid"))
+                print();print()
+        else:
+            # Print aggregation info
+            print(general_info_colored("Sender Domain", key))
+            value["all_emails"] = sorted(value["all_emails"])
+            print(general_info_colored("Emails", ";".join(value["all_emails"])))
+            # Sort data by hop serial number
+            value["data"] = sorted(value["data"], key=lambda d: d['serial']) 
+            output_rows = []
+            max_values_dict = {}
+            bad = []
+            # Calculate percentage and document in max values dictionary foreach hop number
+            for values in value["data"]:
+                values["perct"] = (len(values["mails"])/len(value["all_emails"]))*100
+                if(values["serial"] not in max_values_dict.keys()):
+                    max_values_dict[values["serial"]] = values["perct"]
+                else:
+                    max_values_dict[values["serial"]] = max(max_values_dict[values["serial"]],values["perct"])
+            # Color hops accordingly to the max percentage
+            for values in value["data"]:
+                if(values["perct"] == 100):
+                    perct = colored(str(values["perct"])+"%","green")
+                elif(values["perct"] == max_values_dict[values["serial"]]):
+                    perct = colored(str(values["perct"])+"% (Majority)","yellow")
+                else:
+                    perct = colored(str(values["perct"])+"%","red")
+                    bad.extend(values["mails"])
+                # Join the email files names
+                values["mails"] = "\n".join(values["mails"])
+                values["perct"] = perct
+                output_rows.append(list(values.values()))
+            # Print the filename that appears the most in the bad values list
+            if (len(bad) != 0):
+                print(general_info_colored("Most Anomalous Email: ",max(set(bad), key = bad.count)))
             else:
-                max_values_dict[values["serial"]] = max(max_values_dict[values["serial"]],values["perct"])
-
-        # Color hops accordingly to the max percentage
-        for values in value["data"]:
-            if(values["perct"] == 100):
-                perct = colored(str(values["perct"])+"%","green")
-            elif(values["perct"] == max_values_dict[values["serial"]]):
-                perct = colored(str(values["perct"])+"% (Majority)","yellow")
-            else:
-                perct = colored(str(values["perct"])+"%","red")
-                bad.extend(values["mails"])
-            
-            # Join the email files names
-            values["mails"] = "\n".join(values["mails"])
-            
-            values["perct"] = perct
-            output_rows.append(list(values.values()))
-        
-        # Print the filename that appears the most in the bad values list
-        print(general_info_colored("Most Anomalous Email: ",max(set(bad), key = bad.count)))
-
-        # Print statistics table
-        print(tabulate(list(output_rows),headers=["serial","from domain","by domain","emails","perct"],tablefmt="fancy_grid"))
-        
-        print();print()
+                print("no file that appears the most in the bad values list")
+            # Print statistics table
+            print(tabulate(list(output_rows),headers=["serial","from domain","by domain","emails","perct"],tablefmt="fancy_grid"))
+            print();print()
