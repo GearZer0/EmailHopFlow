@@ -10,6 +10,7 @@ import csv
 import time
 import textwrap
 import glob
+from itertools import groupby
 
 def join_tuple_string(strings_tuple) -> str:
     """
@@ -122,6 +123,11 @@ def create_hop_obj(hop, aggr_mode):
     except:
         hop_obj["from"] = ""
     try:
+        ip_pattern = re.compile("(?:[0-9]{1,3}\.){3}[0-9]{1,3}")
+        hop_obj["from_ip"] = ip_pattern.findall(hop["from"])[0]
+    except:
+        hop_obj["from_ip"] = ""
+    try:
         hop_obj["by"] = ip_fqdn_pattern.findall(hop["by"])[0][0]
     except:
         hop_obj["by"] = ""
@@ -147,31 +153,35 @@ def create_parser():
     parser = argparse.ArgumentParser(
                         prog = 'mailflow_tool.py',
                         description = 'A simple cli tool to track multiple email messages - showing general info and hops')
-    parser.add_argument('--general',
+    parser.add_argument('-g','--general',
                 action='store',
                 default="file_name,spf_ip,id,subject,date,from,to,spf,dkim,dmarc,rcv_spf,total_delay",
                 help="Comma delimited list of keys to show in each email general info - Ignored if in aggr mode (DEFAULT: file_name,id,subject,date,from,spf,dkim,dmarc,rcv_spf,total_delay)")
-    parser.add_argument('--csv',
+    parser.add_argument('-c','--csv',
                 action='store_true',
                 default=False,
                 help="Add this flag if you would like to export data to csv, field filters will be applied - Ignored if in aggr mode")
-    parser.add_argument('--minCsv',
+    parser.add_argument('-mc','--minCsv',
                 action='store_true',
                 default=False,
                 help="Add this flag if you would like to export data to minimized csv - Ignored if in aggr mode")
-    parser.add_argument('--firsthop',
-                action='store_true',
-                default=False,
-                help="Add this flag if you would like to get info about the first hop - Ignored if in aggr mode")
-    parser.add_argument('--firstip',
+    parser.add_argument('-sh','--selecthop',
+                action='store',
+                default=0,
+                help="Add this flag if you would like to get info about a specific hop number, use -1 to access the last hop - Ignored if in aggr mode")
+    parser.add_argument('-fi','--firstip',
                 action='store_true',
                 default=False,
                 help="Add this flag if you would like to get info about the first hop that has ip address in it - Ignored if in aggr mode")
-    parser.add_argument('--aggr',
+    parser.add_argument('-a','--aggr',
                 action='store_true',
                 default=False,
                 help="Add this flag if you would like to aggregate email by root domains")
-    parser.add_argument('--senderdomain',
+    parser.add_argument('-s','--select',
+                action='store',
+                default="",
+                help="Add this flag if you would like to group hops by a field (currently working only in -fi and-or -sh modes)")
+    parser.add_argument('-sd','--senderdomain',
                 action='store',
                 default="",
                 help="Add this flag if you would like to aggregate for one domain only")
@@ -179,15 +189,15 @@ def create_parser():
                 action='store_true',
                 default=False,
                 help="Add this flag if you would like to search recursively in the emailFolder")
-    parser.add_argument('--emailFolder',
+    parser.add_argument('-ef','--emailFolder',
                 action='store',
                 default=os.path.join(os.path.dirname(__file__),"emails"),
                 help="The path to the emails folder, will fail if not exists (DEFAULT: {})".format(os.path.join(os.path.dirname(__file__),"emails")))
-    parser.add_argument('--csvFolder',
+    parser.add_argument('-cf','--csvFolder',
                 action='store',
                 default=os.path.join(os.path.dirname(__file__),"csv"),
                 help="The path to where output the csv files, will create if not existent and csv mode selected (DEFAULT: {})".format(os.path.join(os.path.dirname(__file__),"emails")))
-    parser.add_argument('--minCsvFolder',
+    parser.add_argument('-mcf','--minCsvFolder',
                 action='store',
                 default=os.path.join(os.path.dirname(__file__),"minimized_csv"),
                 help="The path to where output the csv files, will create if not existent and csv mode selected (DEFAULT: {})".format(os.path.join(os.path.dirname(__file__),"emails")))
@@ -264,6 +274,51 @@ def print_aggregate(aggr_dict,sender_domain):
         if not sender_domain or key == sender_domain:
             aggregate_summary(key,value)
 
+def prepare_hops_for_console(hops_array):
+    # The width of the console, will be used for relative column printing in console mode
+    console_width = os.get_terminal_size().columns
+
+    # Adjust column sizes relatively to general width
+    for hop in hops_array:
+        relative_part = 1/len(hop.keys())
+        for key in hop.keys():
+            hop[key] = "\n".join(textwrap.wrap(str(hop[key]),int(console_width*relative_part)))
+    return hops_array
+    
+def prepare_info_dict_for_console(info_dict, general_args):
+
+    # Keep only the selected keys from the general info value and format it with line break
+    info_dict["General Info"] = [str(info_dict["General Info"][key]) for key in general_args]
+
+    # Adjust column sizes relatively to general width
+    info_dict["Hops"] = prepare_hops_for_console(info_dict["Hops"])
+    
+    return info_dict
+
+def prepare_info_dict_for_select_mode(info_dict,filename):
+    info_dict["General Info"] = {}
+    for hop in info_dict["Hops"]:
+        hop["filename"] = filename
+    return info_dict
+
+def print_select(output_rows, select_field):
+
+    new_output_rows = []
+    # define a function for key
+    def key_func(k):
+        return k['Hops'][0][select_field]
+    
+    # sort INFO data by 'company' key.
+    output_rows = sorted(output_rows, key=key_func)
+    
+    for key, value in groupby(output_rows, key_func):
+        hops_temp = []
+        for obj in list(value):
+            hops_temp.extend(obj["Hops"])
+        new_output_rows.append({"General Info": {general_info_colored(select_field, key)}, "Hops":prepare_hops_for_console(hops_temp) })
+
+    print_console(new_output_rows)
+
 
 parser = create_parser()
 # Parse arguments and perform validity checks
@@ -289,7 +344,6 @@ output_rows = []
 min_output_rows = []
 aggr_dict = {}
 
-
 # Loop through all the email files in the path
 for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recursive):
 
@@ -313,7 +367,7 @@ for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recurs
         mail = mailparser.parse_from_string(read_stream)
 
         if (args.minCsv):
-            min_output_rows.append(generate_minimized_csv(mail))
+            min_output_rows.extend(generate_minimized_csv(mail))
 
         # The mail info dictionary 
         info_dict = {}
@@ -329,7 +383,6 @@ for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recurs
 
         # Initialize the hop dictionary, relevant for csv mode
         hop_dict = {}
-
 
         # Loop through all hops
         for hop in json.loads(mail.received_json):
@@ -358,46 +411,68 @@ for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recurs
                     for k, v in hop_dict.items():
                         joined_dict[k] = v
                     output_rows.append(joined_dict)
-            else:
-                # The width of the console, will be used for relative column printing in console mode
-                console_width = os.get_terminal_size().columns
+            elif(args.selecthop != 0 | args.firstip):
+                    info_dict["General Info"] = {}
 
-                # Keep only the selected keys from the general info value and format it with line break
-                info_dict["General Info"] = [str(info_dict["General Info"][key]) for key in general_args]
+                    sh_selected_hop = {}
+                    fi_selected_hop = {}
 
-                if(args.firsthop | args.firstip):
-                    selected_hop = {}
-                    constructed_hop = {}
-                    if(args.firsthop):
-                        selected_hop = info_dict["Hops"][0]
-                    else:
+                    if(args.selecthop != 0):
+                        try:
+                            hop_num = int(args.selecthop)
+                            if(hop_num > 0):
+                                sh_selected_hop = deepcopy(info_dict["Hops"][hop_num -1])
+                            else:
+                                sh_selected_hop = deepcopy(info_dict["Hops"][hop_num])
+                        except:
+                            pass
+
+                    if(args.firstip):
                         for hop in info_dict["Hops"]:
-                            ip_pattern = re.compile("(?:[0-9]{1,3}\.){3}[0-9]{1,3}")
-                            try:
-                                constructed_hop["from_ip"] = ip_pattern.findall(hop["from"])[0]
-                                selected_hop = hop
+                            if(hop["from_ip"] != ""):
+                                fi_selected_hop = deepcopy(hop)
                                 break
-                            except:
-                                pass
-                    constructed_hop["hop_num"] = selected_hop["serial"]
-                    fqdn_pattern = re.compile("((?=.{4,253}\.?$)(((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63}\.?))")
-                    
-                    count = 1
-                    for finding in fqdn_pattern.findall(selected_hop["from"]):
-                        constructed_hop["from"+str(count)] = finding[1]
-                        count+=1
-                    constructed_hop["by"] = selected_hop["by"]
-                    constructed_hop["for"] = selected_hop["for"]
-                    
-                    info_dict["Hops"] = [constructed_hop]
-                # Adjust column sizes relatively to general width
-                for hop in info_dict["Hops"]:
-                    relative_part = 1/len(hop.keys())
-                    for key in hop.keys():
-                        hop[key] = "\n".join(textwrap.wrap(str(hop[key]),int(console_width*relative_part)))
 
+                    for selected_hop in [fi_selected_hop,sh_selected_hop]:
+                        if(selected_hop != {}):
+                            constructed_hop = {}
+
+                            selected_hop["filename"] = short_filename
+                            constructed_hop["hop_num"] = selected_hop["serial"]
+
+                            fqdn_pattern = re.compile("((?=.{4,253}\.?$)(((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63}\.?))")
+                            #count = 1
+                            #for finding in fqdn_pattern.findall(selected_hop["from"]):
+                            #    constructed_hop["from"+str(count)] = finding[1]
+                            #    count+=1
+                            
+                            try:
+                                constructed_hop["from1"] = fqdn_pattern.findall(selected_hop["from"])[0][1]
+                            except:
+                                constructed_hop["from1"] = ""
+
+                            try:
+                                constructed_hop["from2"] = fqdn_pattern.findall(selected_hop["from"])[1][1]
+                            except:
+                                constructed_hop["from2"] = ""
+                            
+                            constructed_hop["by"] = selected_hop["by"]
+                            constructed_hop["for"] = selected_hop["for"]
+
+                            constructed_hop["from_ip"] = selected_hop["from_ip"]
+
+                            info_dict["Hops"] = [deepcopy(constructed_hop)]
+
+                            if(not args.select):
+                                output_rows.append(deepcopy(prepare_info_dict_for_console(info_dict, [])))
+                            else:
+                                output_rows.append(deepcopy(prepare_info_dict_for_select_mode(info_dict,short_filename)))
+            else:
                 # Append the row to the array
-                output_rows.append(deepcopy(info_dict))
+                if(not args.select):
+                    output_rows.append(deepcopy(prepare_info_dict_for_console(info_dict, general_args)))
+                else:
+                    output_rows.append(deepcopy(prepare_info_dict_for_select_mode(info_dict,short_filename)))
         else: # If in aggregation mode
 
             # If no key was created yet then create it
@@ -440,6 +515,8 @@ if(args.minCsv):
     create_csv(args.minCsvFolder,"min-",min_output_rows)
 if(args.csv):
     create_csv(args.csvFolder,"",output_rows)
+elif(args.select):
+    print_select(output_rows,args.select)
 elif(not args.aggr): # If in console mode
     print_console(output_rows)
 else:
