@@ -11,6 +11,7 @@ import time
 import textwrap
 import glob
 from itertools import groupby
+import sys
 
 def join_tuple_string(strings_tuple) -> str:
     """
@@ -34,7 +35,10 @@ def generate_minimized_csv(mail):
     output_rows = []
 
     for to_record in mail.to:
-        output_rows.append({"id": mail.message_id, "to": to_record[1]})
+        output_rows.append({"message_id": mail.message_id, "to": to_record[1]})
+
+    for to_record in mail.cc:
+        output_rows.append({"message_id": mail.message_id, "to": to_record[1]})
     return output_rows
 
 def create_csv(csv_folder_path,file_prefix,output_rows):
@@ -149,10 +153,19 @@ def create_hop_obj(hop, aggr_mode):
     return hop_obj
 
 def create_parser():
+    class MyParser(argparse.ArgumentParser):
+        def error(self, message):
+            sys.stderr.write('error: %s\n' % message)
+            self.print_help()
+            sys.exit(2)
     # Declare argument variables
-    parser = argparse.ArgumentParser(
+    parser = MyParser(
                         prog = 'mailflow_tool.py',
                         description = 'A simple cli tool to track multiple email messages - showing general info and hops')
+    parser.add_argument('-n','--normal',
+                action='store_true',
+                default=False,
+                help="Parse each email and display its general info and hops table")
     parser.add_argument('-g','--general',
                 action='store',
                 default="file_name,spf_ip,id,subject,date,from,to,spf,dkim,dmarc,rcv_spf,total_delay",
@@ -201,6 +214,9 @@ def create_parser():
                 action='store',
                 default=os.path.join(os.path.dirname(__file__),"minimized_csv"),
                 help="The path to where output the csv files, will create if not existent and csv mode selected (DEFAULT: {})".format(os.path.join(os.path.dirname(__file__),"emails")))
+    if len(sys.argv)==1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
     return parser
 
 def generate_general_info(mail, aggr_mode, csv_mode, short_filename):
@@ -267,6 +283,19 @@ def print_console(output_rows):
         # Print the hops table
         print(tabulate(table_rows,headers=hop_keys,tablefmt="fancy_grid"))
         print();print()
+
+def print_combined_table(output_rows):
+    table_rows = []
+    hop_keys = ""
+    # Go through all rows
+    for dic in output_rows:
+        # Break the lines of the hops
+        for hop in dic["Hops"]:
+            table_rows.append(list(hop.values()))
+            hop_keys = hop.keys()
+
+    # Print the hops table
+    print(tabulate(table_rows,headers=hop_keys,tablefmt="fancy_grid"))
 
 def print_aggregate(aggr_dict,sender_domain):
     # Foreach email aggregation
@@ -345,7 +374,7 @@ min_output_rows = []
 aggr_dict = {}
 
 # Loop through all the email files in the path
-for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recursive):
+for file_name in glob.glob(os.path.join(emails_path,"**"),recursive=args.recursive):
 
     # If the path specified is not a file then skip this loop run
     if(not os.path.isfile(file_name)):
@@ -411,6 +440,16 @@ for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recurs
                     for k, v in hop_dict.items():
                         joined_dict[k] = v
                     output_rows.append(joined_dict)
+                    
+                for to_record in mail.cc:
+                    info_dict["General Info"]["to"] = to_record
+                    info_dict["General Info"] = {key: info_dict["General Info"][key] for key in general_args}
+                    # Add the hop and general info joined dict to the list
+                    joined_dict = deepcopy(info_dict["General Info"])
+                    for k, v in hop_dict.items():
+                        joined_dict[k] = v
+                    output_rows.append(joined_dict)
+                
             elif(args.selecthop != 0 | args.firstip):
                     info_dict["General Info"] = {}
 
@@ -437,7 +476,7 @@ for file_name in glob.iglob(os.path.join(emails_path,"**"),recursive=args.recurs
                         if(selected_hop != {}):
                             constructed_hop = {}
 
-                            selected_hop["filename"] = short_filename
+                            constructed_hop["filename"] = short_filename
                             constructed_hop["hop_num"] = selected_hop["serial"]
 
                             fqdn_pattern = re.compile("((?=.{4,253}\.?$)(((?!-)[a-zA-Z0-9-]{1,63}(?<!-)\.)+[a-zA-Z]{2,63}\.?))")
@@ -517,6 +556,8 @@ if(args.csv):
     create_csv(args.csvFolder,"",output_rows)
 elif(args.select):
     print_select(output_rows,args.select)
+elif(args.selecthop != 0 | args.firstip):
+    print_combined_table(output_rows)
 elif(not args.aggr): # If in console mode
     print_console(output_rows)
 else:
