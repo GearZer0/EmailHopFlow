@@ -35,10 +35,10 @@ def generate_minimized_csv(mail):
     output_rows = []
 
     for to_record in mail.to:
-        output_rows.append({"message_id": mail.message_id, "to": to_record[1]})
+        output_rows.append({"message_id": mail.message_id, "recipient": to_record[1]})
 
     for to_record in mail.cc:
-        output_rows.append({"message_id": mail.message_id, "to": to_record[1]})
+        output_rows.append({"message_id": mail.message_id, "recipient": to_record[1]})
     return output_rows
 
 def create_csv(csv_folder_path,file_prefix,output_rows):
